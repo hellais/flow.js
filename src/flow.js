@@ -28,6 +28,7 @@
    * @param {number} [opts.chunkRetryInterval]
    * @param {Array.<number>} [opts.permanentErrors]
    * @param {Array.<number>} [opts.successStatuses]
+   * @param {Function} [opts.fileStreamFactory]
    * @param {Function} [opts.generateUniqueIdentifier]
    * @constructor
    */
@@ -89,9 +90,10 @@
       chunkRetryInterval: null,
       permanentErrors: [404, 415, 500, 501],
       successStatuses: [200, 201, 202],
-      onDropStopPropagation: false
+      onDropStopPropagation: false,
+      fileStreamFactory: null
     };
-
+    
     /**
      * Current options
      * @type {Object}
@@ -142,6 +144,12 @@
      * @type {Object}
      */
     this.opts = Flow.extend({}, this.defaults, opts || {});
+
+    if (typeof this.opts.fileStreamFactory !=== "undefined" &&
+        this.defaults.prioritizeFirstAndLastChunk) {
+      throw "Cannot use prioritizeFirstAndLastChunk and fileStreamFactory together";
+    }
+
   }
 
   Flow.prototype = {
@@ -687,6 +695,15 @@
      * @type {Flow}
      */
     this.flowObj = flowObj;
+    
+    /**
+     * A Readable stream that will allow us to read and write data.
+     * Must also have the size attribute set.
+     * @type {stream.Readable}
+     */
+    if (typeof this.flowObj.fileStreamFactory === "function") {
+      this.stream = this.flowObj.fileStreamFactory(file);
+    }
 
     /**
      * Reference to file
@@ -704,7 +721,11 @@
      * File size
      * @type {number}
      */
-    this.size = file.size;
+    if (this.stream) {
+      this.size = this.stream.size;
+    } else {
+      this.size = file.size;
+    }
 
     /**
      * Relative file path
@@ -902,7 +923,7 @@
       this._prevProgress = 0;
       var round = this.flowObj.opts.forceChunkSize ? Math.ceil : Math.floor;
       var chunks = Math.max(
-        round(this.file.size / this.flowObj.opts.chunkSize), 1
+        round(this.size / this.flowObj.opts.chunkSize), 1
       );
       for (var offset = 0; offset < chunks; offset++) {
         this.chunks.push(
@@ -1116,6 +1137,8 @@
      */
     this.endByte = Math.min(this.fileObjSize, (this.offset + 1) * chunkSize);
 
+    this.data = null;
+
     /**
      * XMLHttpRequest
      * @type {XMLHttpRequest}
@@ -1182,6 +1205,7 @@
     this.doneHandler = function(event) {
       var status = $.status();
       if (status === 'success' || status === 'error') {
+        delete this.data;
         $.event(status, $.message());
         $.flowObj.uploadNextChunk();
       } else {
@@ -1283,11 +1307,19 @@
       this.total = 0;
       this.pendingRetry = false;
 
-      var func = (this.fileObj.file.slice ? 'slice' :
-        (this.fileObj.file.mozSlice ? 'mozSlice' :
-          (this.fileObj.file.webkitSlice ? 'webkitSlice' :
-            'slice')));
-      var bytes = this.fileObj.file[func](this.startByte, this.endByte, this.fileObj.file.type);
+      var bytes;
+      if (this.fileObj.stream) {
+        if (typeof this.data === "undefined") {
+          this.data = this.fileObj.stream.read(this.endByte - this.startByte);
+        }
+        bytes = this.data;
+      } else {
+        var func = (this.fileObj.file.slice ? 'slice' :
+          (this.fileObj.file.mozSlice ? 'mozSlice' :
+            (this.fileObj.file.webkitSlice ? 'webkitSlice' :
+              'slice')));
+        bytes = this.fileObj.file[func](this.startByte, this.endByte, this.fileObj.file.type);
+      }
 
       // Set up request and listen for event
       this.xhr = new XMLHttpRequest();
