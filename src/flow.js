@@ -28,7 +28,7 @@
    * @param {number} [opts.chunkRetryInterval]
    * @param {Array.<number>} [opts.permanentErrors]
    * @param {Array.<number>} [opts.successStatuses]
-   * @param {Function} [opts.fileStreamFactory]
+   * @param {Function} [opts.fileFactory]
    * @param {Function} [opts.generateUniqueIdentifier]
    * @constructor
    */
@@ -91,7 +91,7 @@
       permanentErrors: [404, 415, 500, 501],
       successStatuses: [200, 201, 202],
       onDropStopPropagation: false,
-      fileStreamFactory: null
+      fileFactory: webAPIFileFactory,
     };
     
     /**
@@ -145,9 +145,9 @@
      */
     this.opts = Flow.extend({}, this.defaults, opts || {});
 
-    if (typeof this.opts.fileStreamFactory !=== "undefined" &&
+    if (!this.opts.fileFactory.supportsPrioritizeFirstAndLastChunk &&
         this.defaults.prioritizeFirstAndLastChunk) {
-      throw "Cannot use prioritizeFirstAndLastChunk and fileStreamFactory together";
+      throw Error("Cannot use prioritizeFirstAndLastChunk and with this fileFactory.");
     }
 
   }
@@ -697,13 +697,10 @@
     this.flowObj = flowObj;
     
     /**
-     * A Readable stream that will allow us to read and write data.
-     * Must also have the size attribute set.
-     * @type {stream.Readable}
+     * A proxy to read the bytes from the file. See 
+     * @type {webAPIFileFactory} for the interface.
      */
-    if (typeof this.flowObj.fileStreamFactory === "function") {
-      this.stream = this.flowObj.fileStreamFactory(file);
-    }
+    this.fileProxy = this.flowObj.fileFactory(file);
 
     /**
      * Reference to file
@@ -721,11 +718,7 @@
      * File size
      * @type {number}
      */
-    if (this.stream) {
-      this.size = this.stream.size;
-    } else {
-      this.size = file.size;
-    }
+    this.size = this.fileProxy.size;
 
     /**
      * Relative file path
@@ -1039,14 +1032,70 @@
      */
     getExtension: function () {
       return this.name.substr((~-this.name.lastIndexOf(".") >>> 0) + 2).toLowerCase();
-    }
+    },
+
+    implementsFile: function(file) {
+      var methods = [
+        'slice'
+      ],
+        attributes = [
+        'fileObj',
+        'name',
+        'size',
+        'relativePath',
+        'supportsPrioritizeFirstAndLastChunk'
+      ];
+      for (var method in methods) {
+        if (!file[method] || typeof file[method] !== "function") {
+          //throw new Error("You must implement the " + method + " method.");
+          return false;
+        }
+      }
+
+      for (var attribute in attributes) {
+        if (!(attribute in file[attribute])) {
+          throw new Error("You must have the " + attribute + " attribute.");
+          return false;
+        }
+      }
+      return true;
+    },
+
   };
 
+  /**
+   * Default factory for generating files implementing the following interface
+   *
+   * @interface File
+   * @method slice(startByte, endByte, fileType)
+   *
+   * @var supportsPrioritizeFirstAndLastChunk
+   * @var fileObj
+   * @var name
+   * @var size
+   * @var relativePath
+   *
+   */
+  function webAPIFileFactory(fileObj) {
+    return {
+      fileObj: fileObj,
+      name: fileObj.fileName || fileObj.name,
+      size: fileObj.size,
+      relativePath: fileObj.relativePath || fileObj.webkitRelativePath || fileObj.fileName || fileObj.name,
+      slice: function(startByte, endByte, fileType) {
+        var function_name = (this.fileObj.file.slice ? 'slice' :
+          (this.fileObj.file.mozSlice ? 'mozSlice' :
+            (this.fileObj.file.webkitSlice ? 'webkitSlice' :
+              'slice')));
+        return this.fileObj.file[function_name](startByte, endByte, fileType);
+      }
+    }
+  }
 
-
-
-
-
+  /**
+   * The webAPIFileFactory support prioritization of the first and last chunk.
+   * */
+  webAPIFileFactory.prototype.supportsPrioritizeFirstAndLastChunk = true;
 
 
   /**
@@ -1307,19 +1356,7 @@
       this.total = 0;
       this.pendingRetry = false;
 
-      var bytes;
-      if (this.fileObj.stream) {
-        if (typeof this.data === "undefined") {
-          this.data = this.fileObj.stream.read(this.endByte - this.startByte);
-        }
-        bytes = this.data;
-      } else {
-        var func = (this.fileObj.file.slice ? 'slice' :
-          (this.fileObj.file.mozSlice ? 'mozSlice' :
-            (this.fileObj.file.webkitSlice ? 'webkitSlice' :
-              'slice')));
-        bytes = this.fileObj.file[func](this.startByte, this.endByte, this.fileObj.file.type);
-      }
+      var bytes = this.fileProxy.slice(this.startByte, this.endByte, this.fileObj.file.type);
 
       // Set up request and listen for event
       this.xhr = new XMLHttpRequest();

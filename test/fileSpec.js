@@ -34,4 +34,22 @@ describe('FlowFile functions', function() {
     file.name = '.dwq.dq.wd.qdw.E';
     expect(file.getExtension()).toBe('e');
   });
+
+  it('should check the interface of a File to be returned by the fileFactory',
+     function() {
+      function dummyFileFactory(fileObj) {
+        return {
+            fileObj: null,
+            name: null,
+            size: null,
+            relativePath: null,
+            slice: function(startByte, endByte, fileType) {
+              return new Blob(["data"], {'type': fileType});
+            }
+        } 
+      };
+      dummyFileFactory.prototype.supportsPrioritizeFirstAndLastChunk = true;
+
+      expect(file.implementsFile(dummyFileFactory())).toBe(true);
+  });
 });
